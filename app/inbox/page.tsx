@@ -76,7 +76,9 @@ async function InboxBody() {
         <Empty>
           <EmptyHeader>
             <EmptyTitle>No submissions yet</EmptyTitle>
-            <EmptyDescription>Completed onboarding forms will appear here.</EmptyDescription>
+            <EmptyDescription>
+              Every submission is emailed to piyush@apocor.ai. Copies saved on this server also show up here.
+            </EmptyDescription>
           </EmptyHeader>
         </Empty>
       )}

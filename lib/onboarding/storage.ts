@@ -2,6 +2,12 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 
 import { extensionOf, isFileField, MAX_FILE_BYTES } from "@/lib/onboarding/files"
+import {
+  clientLabel,
+  emailSubmission,
+  emailSubmissionComplete,
+  emailSubmissionFile,
+} from "@/lib/onboarding/mail"
 import { mergeDefaults, onboardingSchema, type OnboardingValues } from "@/lib/onboarding/schema"
 
 export type StoredFile = {
@@ -45,6 +51,22 @@ async function writeRecord(record: SubmissionRecord) {
   )
 }
 
+async function tryRead(id: string) {
+  try {
+    return await readRecord(id)
+  } catch {
+    return null
+  }
+}
+
+async function tryWrite(record: SubmissionRecord) {
+  try {
+    await writeRecord(record)
+  } catch (error) {
+    console.error("Could not store the submission on disk", error)
+  }
+}
+
 export async function createSubmission(input: unknown) {
   const answers = mergeDefaults(onboardingSchema.parse(input))
   const id = crypto.randomUUID()
@@ -57,7 +79,8 @@ export async function createSubmission(input: unknown) {
     answers,
     files: [],
   }
-  await writeRecord(record)
+  await tryWrite(record)
+  await emailSubmission(record)
   return record
 }
 
@@ -68,14 +91,13 @@ export function safeFileName(name: string) {
 }
 
 export async function saveSubmissionFile(id: string, field: string, file: File) {
+  assertId(id)
   if (!isFileField(field)) throw new Error("Unknown file.")
   if (file.size > MAX_FILE_BYTES) throw new Error("File is larger than 8 MB.")
   const extension = extensionOf(file.name)
   const storedName = `${field}__${Date.now()}__${safeFileName(file.name || `file${extension}`)}`
   if (!/^[a-zA-Z0-9._-]+$/.test(storedName)) throw new Error("Invalid file name.")
-  const record = await readRecord(id)
   const bytes = Buffer.from(await file.arrayBuffer())
-  await writeFile(path.join(submissionDir(id), storedName), bytes)
   const next: StoredFile = {
     field,
     name: file.name,
@@ -83,18 +105,40 @@ export async function saveSubmissionFile(id: string, field: string, file: File) 
     type: file.type,
     storedName,
   }
-  record.files = record.files.filter((item) => item.field !== field || field === "ownerIds" || field === "sourceFiles" || field.startsWith("screen"))
-  record.files.push(next)
-  record.updatedAt = new Date().toISOString()
-  await writeRecord(record)
+  const record = await tryRead(id)
+  if (record) {
+    try {
+      await writeFile(path.join(submissionDir(id), storedName), bytes)
+      record.files = record.files.filter(
+        (item) => item.field !== field || field === "ownerIds" || field === "sourceFiles" || field.startsWith("screen")
+      )
+      record.files.push(next)
+      record.updatedAt = new Date().toISOString()
+      await writeRecord(record)
+    } catch (error) {
+      console.error("Could not store the upload on disk", error)
+    }
+  }
+  await emailSubmissionFile({
+    id,
+    label: record ? clientLabel(record.answers) : id,
+    field,
+    filename: storedName,
+    bytes,
+    contentType: file.type || "application/octet-stream",
+  })
   return next
 }
 
 export async function completeSubmission(id: string) {
-  const record = await readRecord(id)
-  record.status = "complete"
-  record.updatedAt = new Date().toISOString()
-  await writeRecord(record)
+  assertId(id)
+  const record = await tryRead(id)
+  if (record) {
+    record.status = "complete"
+    record.updatedAt = new Date().toISOString()
+    await tryWrite(record)
+  }
+  await emailSubmissionComplete(id, record ? clientLabel(record.answers) : id)
   return record
 }
 
